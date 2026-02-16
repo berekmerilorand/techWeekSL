@@ -1,6 +1,6 @@
 # techWeekSL
 
-A collection of demos, utilities, and implementation tests built during **Tech Week**.
+A collection of demos, utilities, and implementation tests built during **Tech Week @SL**.
 
 ## Repository Structure
 
