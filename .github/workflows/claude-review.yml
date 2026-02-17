@@ -20,15 +20,20 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install PyGithub
 
       - name: Install Claude CLI
         run: |
-          curl -fsSL https://raw.githubusercontent.com/anthropics/claude-cli/main/install.sh | bash
+          curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Verify Claude CLI
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          claude --version
 
       - name: Run Claude PR Review
         env:
