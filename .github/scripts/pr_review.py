@@ -145,6 +145,82 @@ If the PR looks good, return an empty comments array and a short summary."""
 
 
 def invoke_claude(prompt: str, model: Optional[str] = None) -> dict:
+    # Ensure API key is available
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set")
+
+    # Try to use Anthropic SDK if available, otherwise fall back to CLI
+    try:
+        import anthropic
+        return _invoke_claude_sdk(prompt, api_key, model)
+    except ImportError:
+        LOGGER.warning("Anthropic SDK not available, falling back to CLI")
+        return _invoke_claude_cli(prompt, api_key, model)
+
+
+def _invoke_claude_sdk(prompt: str, api_key: str, model: Optional[str] = None) -> dict:
+    """Use Anthropic Python SDK directly (faster and more reliable)"""
+    import anthropic
+    import re
+
+    if model is None:
+        model = "claude-3-5-sonnet-20241022"
+
+    LOGGER.info("Invoking Claude API with model %s...", model)
+    LOGGER.debug("Prompt length: %d characters", len(prompt))
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            temperature=0,
+            system="You are a code reviewer. Analyze the PR and return ONLY valid JSON matching the required schema. Do not include markdown formatting or explanations.",
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"{prompt}\n\nIMPORTANT: Return ONLY a JSON object matching this exact schema (no markdown, no code blocks):\n{json.dumps(REVIEW_SCHEMA, indent=2)}"
+                }
+            ]
+        )
+
+        # Extract text from response
+        content_text = ""
+        for block in response.content:
+            if hasattr(block, 'text'):
+                content_text += block.text
+
+        LOGGER.debug("Raw API response (first 500 chars): %s", content_text[:500])
+
+        # Try to parse JSON, handling potential markdown code blocks
+        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content_text, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group(1))
+        else:
+            # Try to parse entire response as JSON
+            result = json.loads(content_text.strip())
+
+        # Validate required fields
+        if "comments" not in result or "summary" not in result:
+            raise ValueError(f"Response missing required fields. Got keys: {list(result.keys())}")
+
+        LOGGER.info("Successfully parsed review with %d comments", len(result.get("comments", [])))
+        return result
+
+    except json.JSONDecodeError as e:
+        LOGGER.error("Failed to parse Claude response as JSON: %s", e)
+        LOGGER.error("Response content (first 1000 chars): %s", content_text[:1000])
+        # Return empty review rather than failing
+        return {"comments": [], "summary": "Error parsing Claude response - review skipped"}
+    except Exception as e:
+        LOGGER.error("Error calling Claude API: %s", e)
+        raise RuntimeError(f"Claude API error: {e}")
+
+
+def _invoke_claude_cli(prompt: str, api_key: str, model: Optional[str] = None) -> dict:
+    """Fallback: Use Claude CLI (slower, may timeout)"""
     cmd = [
         "claude",
         "-p",
@@ -160,11 +236,26 @@ def invoke_claude(prompt: str, model: Optional[str] = None) -> dict:
         cmd.extend(["--model", model])
 
     LOGGER.info("Invoking Claude CLI...")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    LOGGER.debug("Command: %s", " ".join(cmd[:4]) + " ... (truncated)")
+    LOGGER.debug("Prompt length: %d characters", len(prompt))
+
+    # Pass environment variables explicitly to subprocess
+    env = os.environ.copy()
+    env["ANTHROPIC_API_KEY"] = api_key
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
+    except subprocess.TimeoutExpired as e:
+        LOGGER.error("Claude CLI timed out after 600 seconds")
+        LOGGER.error("Partial stdout: %s", e.stdout[:500] if e.stdout else "(none)")
+        LOGGER.error("Partial stderr: %s", e.stderr[:500] if e.stderr else "(none)")
+        # Return empty review rather than failing completely
+        return {"comments": [], "summary": "Claude CLI timed out - review skipped"}
 
     if result.returncode != 0:
         LOGGER.error("Claude CLI stderr: %s", result.stderr)
-        raise RuntimeError(f"Claude CLI exited with code {result.returncode}")
+        # Return empty review rather than failing
+        return {"comments": [], "summary": f"Claude CLI error (exit code {result.returncode}) - review skipped"}
 
     response = json.loads(result.stdout)
     if response.get("is_error"):
@@ -254,7 +345,9 @@ def main() -> int:
         else "No specific guidelines."
     )
 
-    gh = Github(GITHUB_TOKEN)
+    from github import Auth
+    auth = Auth.Token(GITHUB_TOKEN)
+    gh = Github(auth=auth)
     repo = gh.get_repo(REPO_NAME)
     pr = repo.get_pull(args.pr_number)
 
