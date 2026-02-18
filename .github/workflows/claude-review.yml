@@ -12,23 +12,21 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install PyGithub anthropic
+        run: pip install PyGithub
 
-      - name: Run Claude PR Review
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run Claude review
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
+          SL_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          python .github/scripts/pr_review.py ${{ github.event.pull_request.number }} --verbose
+          python .github/scripts/pr_review.py ${{ github.event.pull_request.number }}
